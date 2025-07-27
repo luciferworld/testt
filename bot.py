@@ -1,10 +1,10 @@
 import os
 import logging
-import aiohttp
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
+# Load .env
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -18,53 +18,32 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
+    # Accept supported media types
     media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
     if not media:
         await msg.reply_text("❗ Please send a document, video, audio, or photo.")
         return
 
-    # 1. Copy the message to your backup channel
-    copied = await context.bot.copy_message(
+    # Extract file_id (still valid after saving to channel)
+    file_id = media.file_id
+    filename = getattr(media, 'file_name', 'File')
+
+    # Save to your permanent backup channel
+    await context.bot.copy_message(
         chat_id=BACKUP_CHANNEL_ID,
         from_chat_id=msg.chat_id,
         message_id=msg.message_id
     )
 
-    copied_msg_id = copied.message_id
-
-    # 2. Fetch copied message using Telegram Bot API HTTP (not python-telegram-bot)
-    async with aiohttp.ClientSession() as session:
-        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-        async with session.get(api_url) as res:
-            data = await res.json()
-
-    # 3. Try to find the copied message in updates
-    file_id = None
-    for result in reversed(data.get("result", [])):
-        ch_msg = result.get("channel_post", {})
-        if ch_msg.get("message_id") == copied_msg_id:
-            media = ch_msg.get("document") or ch_msg.get("video") or ch_msg.get("audio") or None
-            if not media and "photo" in ch_msg:
-                media = ch_msg["photo"][-1]
-            if media:
-                file_id = media.get("file_id")
-            break
-
-    if not file_id:
-        await msg.reply_text("❌ Failed to extract permanent file ID.")
-        return
-
-    filename = media.get("file_name", "File")
-
-    # 4. Generate Cloudflare Worker link
+    # Build permanent Cloudflare Worker link
     link = f"{WORKER_URL}/?id={file_id}"
     await msg.reply_text(
-        f"✅ File saved.\n📎 *{filename}*\n🔗 [Download File]({link})",
+        f"✅ File saved to cloud.\n📎 *{filename}*\n🔗 [Download File]({link})",
         parse_mode="Markdown"
     )
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.ALL, handle_file))
-    print("🤖 Bot running...")
+    print("🤖 Bot is running...")
     app.run_polling()
